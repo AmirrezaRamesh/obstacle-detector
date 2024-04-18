@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <LiquidCrystal.h>
 #include <IRremote.h>
 #include <EEPROM.h>
