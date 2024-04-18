@@ -4,7 +4,6 @@
 #include <EEPROM.h>
 
 #define IR_RECEIVE_PIN 5
-
 #define ECHO_PIN 3
 #define TRIGGER_PIN 4
 
