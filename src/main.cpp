@@ -308,7 +308,7 @@ void setup() {
     distanceUnit = DISTANCE_UNIT_CM;
   }
 
-  lcd.print("Initializing...");
+  lcd.print("starting...");
   delay(1000);
   lcd.clear();
 }
