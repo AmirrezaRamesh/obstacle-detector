@@ -1,373 +1,92 @@
 #include <Arduino.h>
 #include <LiquidCrystal.h>
-#include <IRremote.h>
-#include <EEPROM.h>
 
-#define IR_RECEIVE_PIN 5
-#define ECHO_PIN 3
-#define TRIGGER_PIN 4
+// Pins
+int trigger_pin = 3;
+int echo_pin = 4;
+int RS_pin = 5;
+int E_pin = 6;
+int D4_pin = 7;
+int D5_pin = 8;
+int D6_pin = 9;
+int D7_pin = 10;
+int led_pin = 2; 
 
-#define WARNING_LED_PIN 11
-#define ERROR_LED_PIN 12
-#define LIGHT_LED_PIN 10
+LiquidCrystal lcd(RS_pin, E_pin, D4_pin, D5_pin, D6_pin, D7_pin); 
 
-#define BUTTON_PIN 2
+// Variables
+unsigned long ultrasonicDelay = 200; 
+unsigned long lastTime = 0; 
+int distance = 0;
 
-#define PHOTORESISTOR_PIN A0
-
-#define LCD_RS_PIN A5
-#define LCD_E_PIN A4
-#define LCD_D4_PIN 6
-#define LCD_D5_PIN 7
-#define LCD_D6_PIN 8
-#define LCD_D7_PIN 9
-
-#define LOCK_DISTANCE 20.0
-#define WARNING_DISTANCE 50.0
-
-// IR button mapping
-#define IR_BUTTON_PLAY     0xFDA05F
-#define IR_BUTTON_OFF      0XFD00FF
-#define IR_BUTTON_EQ       0xFDB04F
-#define IR_BUTTON_UP       0xFD50AF
-#define IR_BUTTON_DOWN     0xFD10EF
-
-// distance unit
-#define DISTANCE_UNIT_CM 0
-#define DISTANCE_UNIT_IN 1
-#define CM_TO_INCHES 0.393701
-#define EEPROM_ADDRESS_DISTANCE_UNIT 50
-
-// lcd mode
-#define LCD_MODE_DISTANCE 0
-#define LCD_MODE_SETTINGS 1
-#define LCD_MODE_LUMINOSITY 2
-
-// lcd
-LiquidCrystal lcd(LCD_RS_PIN, LCD_E_PIN, LCD_D4_PIN,
-                  LCD_D5_PIN, LCD_D6_PIN, LCD_D7_PIN);
-
-// ultrasonic
-unsigned long lastTimeUltrasonicTrigger = millis();
-unsigned long ultrasonicTriggerDelay = 60;
-
-volatile unsigned long pulseInTimeBegin;
-volatile unsigned long pulseInTimeEnd;
-volatile bool newDistanceAvailable = false;
-
-double previousDistance = 400.0;
-
-// warning LED
-unsigned long lastTimeWarningLEDBlinked = millis();
-unsigned long warningLEDDelay = 500;
-byte warningLEDState = LOW;
-
-// error LED
-unsigned long lastTimeErrorLEDBlinked = millis();
-unsigned long errorLEDDelay = 300;
-byte errorLEDState = LOW;
-
-// photoresistor
-unsigned long lastTimeReadLuminosity = millis();
-unsigned long readLuminosityDelay = 100;
-
-// push button
-unsigned long lastTimeButtonChanged = millis();
-unsigned long buttonDebounceDelay = 50;
-byte buttonState;
-
-// ir remote
-IRrecv irrecv(IR_RECEIVE_PIN);
-decode_results results;
-
-bool isLocked = false;
-
-int distanceUnit = DISTANCE_UNIT_CM;
-int lcdMode = LCD_MODE_DISTANCE;
-
-void triggerUltrasonicSensor()
-{
-  digitalWrite(TRIGGER_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIGGER_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIGGER_PIN, LOW);
+void trigger() {
+  digitalWrite(trigger_pin, LOW);
+  delay(2);
+  digitalWrite(trigger_pin, HIGH);
+  delay(10);
+  digitalWrite(trigger_pin, LOW);
 }
 
-double getUltrasonicDistance()
-{
-  double durationMicros = pulseInTimeEnd - pulseInTimeBegin;
-  double distance = durationMicros / 58.0;
-  if (distance > 400.0) {
-    return previousDistance;
-  }
-  distance = previousDistance * 0.6 + distance * 0.4;
-  previousDistance = distance;
+int get_distance() {
+  long duration = pulseIn(echo_pin, HIGH);
+  int distance = duration / 58;
+  Serial.print("Duration: ");
+  Serial.print(duration);
+  Serial.print(" us, Distance: ");
+  Serial.print(distance);
+  Serial.println(" cm");
   return distance;
 }
 
-void echoPinInterrupt()
-{
-  if (digitalRead(ECHO_PIN) == HIGH) { // pulse started
-    pulseInTimeBegin = micros();
-  }
-  else { // pulse stoped
-    pulseInTimeEnd = micros();
-    newDistanceAvailable = true;
-  }
-}
+void led_frequency(int distance) {
 
-void toggleErrorLED()
-{
-  errorLEDState = (errorLEDState == HIGH) ? LOW : HIGH;
-  digitalWrite(ERROR_LED_PIN, errorLEDState);
-}
-
-void toggleWarningLED()
-{
-  warningLEDState = (warningLEDState == HIGH) ? LOW : HIGH;
-  digitalWrite(WARNING_LED_PIN, warningLEDState);
-}
-
-void setWarningLEDBlinkRateFromDistance(double distance)
-{
-  // 0 .. 400 cm -> 0 .. 1600 ms
-  warningLEDDelay = distance * 4;
-  // Serial.println(warningLEDDelay);
-}
-
-void lock()
-{
-  if (!isLocked) {
-    // Serial.println("Locking");
-    isLocked = true;
-    warningLEDState = LOW;
-    errorLEDState = LOW;
-  }
-}
-
-void unlock()
-{
-  if (isLocked) {
-    // Serial.println("Unlocking");
-    isLocked = false;
-    errorLEDState = LOW;
-    digitalWrite(ERROR_LED_PIN, errorLEDState);
-    lcd.clear();
-  }
-}
-
-void printDistanceOnLCD(double distance)
-{
-  if (isLocked) {
-    lcd.setCursor(0, 0);
-    lcd.print("!!! Obstacle !!!     ");
-    lcd.setCursor(0, 1);
-    lcd.print("Press to unlock.   ");
-  }
-  else if (lcdMode == LCD_MODE_DISTANCE) {
-    lcd.setCursor(0, 0);
-    lcd.print("Dist: ");
-    if (distanceUnit == DISTANCE_UNIT_IN) {
-      lcd.print(distance * CM_TO_INCHES);
-      lcd.print(" in       ");
-    }
-    else {
-      lcd.print(distance);
-      lcd.print(" cm     ");
-    }
-    
-    lcd.setCursor(0, 1);
-    if (distance > WARNING_DISTANCE) {
-      lcd.print("No obstacle.         ");
-    }
-    else {
-      lcd.print("!! Warning !!        ");
-    }
-  }
-}
-
-void toggleDistanceUnit()
-{
-  if (distanceUnit == DISTANCE_UNIT_CM) {
-    distanceUnit = DISTANCE_UNIT_IN;
-  }
-  else {
-    distanceUnit = DISTANCE_UNIT_CM;
-  }
-  EEPROM.write(EEPROM_ADDRESS_DISTANCE_UNIT, distanceUnit);
-}
-
-void toggleLCDScreen(bool next)
-{
-  switch (lcdMode) {
-    case LCD_MODE_DISTANCE: {
-      lcdMode = (next) ? LCD_MODE_SETTINGS : LCD_MODE_LUMINOSITY;
-      break;
-    }
-    case LCD_MODE_SETTINGS: {
-      lcdMode = (next) ? LCD_MODE_LUMINOSITY : LCD_MODE_DISTANCE;
-      break;
-    }
-    case LCD_MODE_LUMINOSITY: {
-      lcdMode = (next) ? LCD_MODE_DISTANCE : LCD_MODE_SETTINGS;
-      break;
-    }
-    default: {
-      lcdMode = LCD_MODE_DISTANCE;
-    }
-  }
-
-  lcd.clear();
-
-  if (lcdMode == LCD_MODE_SETTINGS) {
-    lcd.setCursor(0, 0);
-    lcd.print("Press on OFF to");
-    lcd.setCursor(0, 1);
-    lcd.print("reset settings.");
-  }
-}
-
-void resetSettingsToDefault()
-{
-  if (lcdMode == LCD_MODE_SETTINGS) {
-    distanceUnit = DISTANCE_UNIT_CM;
-    EEPROM.write(EEPROM_ADDRESS_DISTANCE_UNIT, distanceUnit);
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Settings have");
-    lcd.setCursor(0, 1);
-    lcd.print("been reset.");
-  }
-}
-
-void handleIRCommand(long command)
-{
-  switch (command) {
-    case IR_BUTTON_PLAY: {
-      unlock();
-      break;
-    }
-    case IR_BUTTON_OFF: {
-      resetSettingsToDefault();
-      break;
-    }
-    case IR_BUTTON_EQ: {
-      toggleDistanceUnit();
-      break;
-    }
-    case IR_BUTTON_UP: {
-      toggleLCDScreen(true);
-      break;
-    }
-    case IR_BUTTON_DOWN: {
-      toggleLCDScreen(false);
-      break;
-    }
-    default: {
-      // do nothing
-    }
-  }
-}
-
-void setLightLEDFromLuminosity(int luminosity)
-{
-  byte brightness = 255 - luminosity / 4;
-  analogWrite(LIGHT_LED_PIN, brightness);
-}
-
-void printLuminosityOnLCD(int luminosity)
-{
-  if (!isLocked && lcdMode == LCD_MODE_LUMINOSITY) {
-    lcd.setCursor(0, 0);
-    lcd.print("Luminosity: ");
-    lcd.print(luminosity);
-    lcd.print("    ");
-  }
+  digitalWrite(led_pin, HIGH);
+  delay(distance * 5);
+  digitalWrite(led_pin, LOW);
+  delay(distance * 5);
 }
 
 void setup() {
-  Serial.begin(115200);
-  lcd.begin(16,2);
-  irrecv.enableIRIn();
-  pinMode(ECHO_PIN, INPUT);
-  pinMode(TRIGGER_PIN, OUTPUT);
-  pinMode(WARNING_LED_PIN, OUTPUT);
-  pinMode(ERROR_LED_PIN, OUTPUT);
-  pinMode(LIGHT_LED_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT);
+  pinMode(trigger_pin, OUTPUT);
+  pinMode(echo_pin, INPUT);
+  pinMode(led_pin, OUTPUT); 
+  lcd.begin(16, 2);
+  Serial.begin(9600);
+  lcd.setCursor(0, 0); 
+  String start_message = "Starting...";
+  lcd.setCursor(0, 0); 
 
-  buttonState = digitalRead(BUTTON_PIN);
-
-  attachInterrupt(digitalPinToInterrupt(ECHO_PIN),
-                  echoPinInterrupt,
-                  CHANGE);
-
-  distanceUnit = EEPROM.read(EEPROM_ADDRESS_DISTANCE_UNIT);
-  if (distanceUnit == 255) {
-    distanceUnit = DISTANCE_UNIT_CM;
+  for (int i = 0; i < start_message.length(); i++) {
+    lcd.print(start_message[i]);
+    delay(200);
   }
-
-  lcd.print("starting...");
-  delay(1000);
+  delay(500);
   lcd.clear();
 }
 
 void loop() {
-  unsigned long timeNow = millis();
+  unsigned long currentTime = millis();
 
-  if (isLocked) {
-    if (timeNow - lastTimeErrorLEDBlinked > errorLEDDelay) {
-      lastTimeErrorLEDBlinked += errorLEDDelay;
-      toggleErrorLED();
-      toggleWarningLED();
+  if (currentTime - lastTime >= ultrasonicDelay) {
+    trigger(); 
+    distance = get_distance();
+    lastTime = currentTime; 
+    if(distance < 40){
+    lcd.clear();
+    lcd.setCursor(2,0);
+    lcd.print("warning!!!");
+    lcd.setCursor(0,1);
+    lcd.print("obstacle nearby");
     }
-
-    if (timeNow - lastTimeButtonChanged > buttonDebounceDelay) {
-      byte newButtonState = digitalRead(BUTTON_PIN);
-      if (newButtonState != buttonState) {
-        lastTimeButtonChanged = timeNow;
-        buttonState = newButtonState;
-        if (buttonState == LOW) { // released
-          unlock();
-        }
-      }
-    }
-  }
-  else {
-    if (timeNow - lastTimeWarningLEDBlinked > warningLEDDelay) {
-      lastTimeWarningLEDBlinked += warningLEDDelay;
-      toggleWarningLED();
+    else{
+    lcd.clear();
+    lcd.setCursor(0, 0); 
+    lcd.print("Distance: ");
+    lcd.setCursor(0,1);
+    lcd.print(distance);
+    lcd.print(" cm");
     }
   }
 
-  if (irrecv.decode(&results)) {
-    irrecv.resume();
-    long command = results.value;
-    handleIRCommand(command);
-    // Serial.println(command);
-  }
-
-  if (timeNow - lastTimeUltrasonicTrigger > ultrasonicTriggerDelay) {
-    lastTimeUltrasonicTrigger += ultrasonicTriggerDelay;
-    triggerUltrasonicSensor();
-  }
-
-  if (newDistanceAvailable) {
-    newDistanceAvailable = false;
-    double distance = getUltrasonicDistance();
-    setWarningLEDBlinkRateFromDistance(distance);
-    printDistanceOnLCD(distance);
-    if (distance < LOCK_DISTANCE) {
-      lock();
-    }
-    // Serial.println(distance);
-  }
-
-  if (timeNow - lastTimeReadLuminosity > readLuminosityDelay) {
-    lastTimeReadLuminosity += readLuminosityDelay;
-    int luminosity = analogRead(PHOTORESISTOR_PIN);
-    setLightLEDFromLuminosity(luminosity);
-    printLuminosityOnLCD(luminosity);
-  }
+  led_frequency(distance);
 }
